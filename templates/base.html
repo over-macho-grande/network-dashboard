@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>{% block title %}Network Dashboard{% endblock %}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+</head>
+<body>
+  <header class="navbar">
+    <div class="navbar-left">
+      <span class="navbar-brand">Network Operations Dashboard</span>
+    </div>
+
+    {% if session.get('user_id') %}
+      <nav class="navbar-links">
+        <a href="{{ url_for('index') }}">Home</a>
+        <a href="{{ url_for('ai_page') }}">AI</a>
+
+        <!-- External links -->
+        <a href="{{ cfg.WAZUH_DASHBOARD_URL }}" target="_blank" rel="noopener">Wazuh</a>
+        <a href="{{ cfg.LNMS_DASHBOARD_URL }}" target="_blank" rel="noopener">LNMS</a>
+        <a href="{{ cfg.GOOGLE_MAPS_SITES_URL }}" target="_blank" rel="noopener">Sites Map</a>
+        <a href="{{ cfg.GOOGLE_DOCS_INDEX_URL }}" target="_blank" rel="noopener">Docs Index</a>
+        <a href="{{ cfg.HELP_DESK_URL }}" target="_blank" rel="noopener">Help Desk</a>
+
+        <span class="navbar-user">
+          {{ username or 'Unknown' }}
+        </span>
+        <a href="{{ url_for('logout') }}" class="logout-link">Logout</a>
+      </nav>
+    {% endif %}
+  </header>
+
+  <main class="container">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="flash-container">
+          {% for category, message in messages %}
+            <div class="flash flash-{{ category }}">{{ message }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+  </main>
+
+  <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

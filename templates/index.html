@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+
+{% block title %}Network Dashboard{% endblock %}
+
+{% block content %}
+<h1>Welcome, {{ username }} </h1>
+
+<section class="grid">
+
+  <!-- Wazuh alerts -->
+  <div class="card">
+    <h2>Wazuh Alerts</h2>
+    {% if wazuh_alerts %}
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Level</th>
+            <th>Agent</th>
+            <th>Rule</th>
+            <th>Time</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for a in wazuh_alerts %}
+          <tr>
+            <td>{{ a.id }}</td>
+            <td class="severity severity-{{ a.level|lower }}">{{ a.level }}</td>
+            <td>{{ a.agent }}</td>
+            <td>{{ a.rule }}</td>
+            <td>{{ a.time }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p>No recent Wazuh alerts.</p>
+    {% endif %}
+  </div>
+
+  <!-- LNMS alerts -->
+  <div class="card">
+
+    <!-- Header with dropdown -->
+    <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+      <h2>LNMS Alerts</h2>
+
+      <form method="get" action="{{ url_for('index') }}" class="lnms-time-filter">
+        <label for="lnms_window">Time window:</label>
+        <select name="lnms_window" id="lnms_window" onchange="this.form.submit()">
+          <option value="1h"  {% if lnms_window == '1h'  %}selected{% endif %}>Last 1 hour</option>
+          <option value="4h"  {% if lnms_window == '4h'  %}selected{% endif %}>Last 4 hours</option>
+          <option value="24h" {% if lnms_window == '24h' %}selected{% endif %}>Last 24 hours</option>
+          <option value="7d"  {% if lnms_window == '7d'  %}selected{% endif %}>Last 7 days</option>
+        </select>
+      </form>
+    </div>
+
+    {% if lnms_alerts %}
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Device</th>
+            <th>Severity</th>
+            <th>Message</th>
+            <th>Time</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for a in lnms_alerts %}
+          <tr>
+            <td>{{ a.id }}</td>
+            <td>{{ a.device }}</td>
+            <td class="severity severity-{{ a.severity|lower }}">{{ a.severity }}</td>
+            <td>{{ a.message }}</td>
+            <td>{{ a.time }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p>No recent LNMS alerts.</p>
+    {% endif %}
+  </div>
+
+</section>
+
+<section class="card">
+  <h2>Top 10 Devices by Resource Usage</h2>
+  <div class="top-grid">
+    <div>
+      <h3>CPU (%)</h3>
+      <ul>
+        {% for d in top_devices.cpu %}
+          <li>{{ d.device }} – {{ d.value }}%</li>
+        {% endfor %}
+      </ul>
+    </div>
+
+    <div>
+      <h3>RAM (%)</h3>
+      <ul>
+        {% for d in top_devices.ram %}
+          <li>{{ d.device }} – {{ d.value }}%</li>
+        {% endfor %}
+      </ul>
+    </div>
+
+    <div>
+      <h3>Bandwidth (Mb/s)</h3>
+      <ul>
+        {% for d in top_devices.bandwidth %}
+          <li>{{ d.device }} – {{ d.value }} Mb/s</li>
+        {% endfor %}
+      </ul>
+    </div>
+
+    <div>
+      <h3>Storage Used (%)</h3>
+      <ul>
+        {% for d in top_devices.storage %}
+          <li>{{ d.device }} – {{ d.value }}%</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+</section>
+
+{% endblock %}
