@@ -5,6 +5,8 @@ from psycopg2.extras import RealDictCursor
 from werkzeug.security import check_password_hash
 import requests
 from datetime import datetime, timedelta
+from typing import Any, Dict, List
+
 
 # -------------------------------------------------------------------
 # App setup
@@ -69,6 +71,15 @@ DEFAULT_TOP_DEVICES = {
     ],
 }
 
+# Shared time-window choices for both LNMS and Wazuh alerts
+ALERT_WINDOW_CHOICES = {
+    "1h": timedelta(hours=1),
+    "4h": timedelta(hours=4),
+    "24h": timedelta(hours=24),
+    "7d": timedelta(days=7),
+}
+ALERT_DEFAULT_WINDOW = "24h"
+
 
 # -------------------------------------------------------------------
 # Database helper
@@ -90,59 +101,21 @@ def get_db_connection():
 
 
 # -------------------------------------------------------------------
-# Wazuh & LNMS data fetch helpers
+# Timestamp helpers
 # -------------------------------------------------------------------
-def fetch_wazuh_alerts(limit: int = 10):
+def _parse_wazuh_timestamp(ts: str):
     """
-    Fetch recent Wazuh alerts via the Wazuh API.
-    Returns a list of dicts matching the template fields, or default data on error.
+    Parse Wazuh alert timestamps into datetime objects.
+    Wazuh indexer stores them in ISO 8601, e.g. '2025-11-26T08:00:00Z'.
     """
-    if not Config.USE_WAZUH_API or not Config.WAZUH_API_URL:
-        return DEFAULT_WAZUH_ALERTS
-
+    if not ts:
+        return None
+    ts = ts.replace("Z", "")
     try:
-        # 1) Authenticate to get JWT token
-        auth_resp = requests.post(
-            f"{Config.WAZUH_API_URL}/security/user/authenticate",
-            json={"username": Config.WAZUH_API_USER, "password": Config.WAZUH_API_PASSWORD},
-            timeout=5,
-            verify=Config.WAZUH_API_VERIFY_SSL,
-        )
-        auth_resp.raise_for_status()
-        token = auth_resp.json().get("data", {}).get("token")
-        if not token:
-            app.logger.warning("Wazuh API: no token in auth response")
-            return DEFAULT_WAZUH_ALERTS
-
-        headers = {"Authorization": f"Bearer {token}"}
-
-        # 2) Fetch alerts
-        alerts_resp = requests.get(
-            f"{Config.WAZUH_API_URL}/security/alerts",
-            params={"limit": limit, "sort": "-timestamp"},
-            headers=headers,
-            timeout=5,
-            verify=Config.WAZUH_API_VERIFY_SSL,
-        )
-        alerts_resp.raise_for_status()
-        data = alerts_resp.json()
-        raw_alerts = data.get("data", {}).get("alerts", [])
-
-        alerts = []
-        for a in raw_alerts:
-            alerts.append(
-                {
-                    "id": a.get("id") or a.get("_id") or "",
-                    "level": str(a.get("rule", {}).get("level", "")).lower(),
-                    "agent": a.get("agent", {}).get("name", ""),
-                    "rule": a.get("rule", {}).get("description", ""),
-                    "time": a.get("@timestamp") or a.get("timestamp", ""),
-                }
-            )
-        return alerts or DEFAULT_WAZUH_ALERTS
-    except Exception as e:
-        app.logger.warning(f"Wazuh API error: {e}")
-        return DEFAULT_WAZUH_ALERTS
+        # Handles 'YYYY-MM-DDTHH:MM:SS' and with microseconds
+        return datetime.fromisoformat(ts)
+    except Exception:
+        return None
 
 
 def _parse_lnms_timestamp(ts: str):
@@ -154,74 +127,275 @@ def _parse_lnms_timestamp(ts: str):
     if not ts:
         return None
     try:
-        # LibreNMS typically uses this format
         return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
     except Exception:
         try:
-            # Fallback for ISO-like formats
             return datetime.fromisoformat(ts.replace("Z", ""))
         except Exception:
             return None
 
 
-def fetch_lnms_data(limit_alerts: int = 10):
+# -------------------------------------------------------------------
+# Wazuh & LNMS data fetch helpers
+# -------------------------------------------------------------------
+def fetch_wazuh_alerts(limit: int = 10, window: timedelta | None = None):
     """
-    Fetch LNMS alerts and top devices (CPU/RAM/bandwidth/storage) from LibreNMS.
-    Returns (alerts_list, top_devices_dict).
-    - Alerts are limited to the last 24 hours.
-    - Only the top `limit_alerts` most recent alerts are returned.
-    """
-    if (
-        not Config.USE_LNMS_API
-        or not Config.LNMS_API_URL
-        or not Config.LNMS_API_TOKEN
-    ):
-        return DEFAULT_LNMS_ALERTS, DEFAULT_TOP_DEVICES
+    Fetch recent Wazuh alerts via the Wazuh INDEXER API (OpenSearch).
 
-    headers = {"X-Auth-Token": Config.LNMS_API_TOKEN}
-    cutoff = datetime.utcnow() - timedelta(days=1)
+    We search the 'wazuh-alerts-4.x-*' indices using a range query on
+    @timestamp, sorted newest-first, and then normalize into the shape
+    the template expects.
+    """
+    if window is None:
+        window = ALERT_WINDOW_CHOICES[ALERT_DEFAULT_WINDOW]
+
+    # Require indexer config to be enabled
+    if (
+        not getattr(Config, "USE_WAZUH_INDEXER", False)
+        or not getattr(Config, "WAZUH_INDEXER_URL", "")
+        or not getattr(Config, "WAZUH_INDEXER_USER", "")
+        or not getattr(Config, "WAZUH_INDEXER_PASSWORD", "")
+    ):
+        return DEFAULT_WAZUH_ALERTS
+
+    cutoff = datetime.utcnow() - window
+    # ISO string for the indexer range query
+    cutoff_iso = cutoff.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
     try:
-        # Grab a reasonable batch so filtering to 24h doesn't miss anything
-        alerts_resp = requests.get(
-            f"{Config.LNMS_API_URL}/alerts",
-            params={"state": 1, "limit": 100},
+        auth = (Config.WAZUH_INDEXER_USER, Config.WAZUH_INDEXER_PASSWORD)
+        headers = {"Content-Type": "application/json"}
+
+        # Over-fetch a bit so we can filter & then trim to `limit`
+        body = {
+            "size": limit * 5,
+            "sort": [{"@timestamp": {"order": "desc"}}],
+            "query": {
+                "range": {
+                    "@timestamp": {
+                        "gte": cutoff_iso,
+                    }
+                }
+            },
+        }
+
+        resp = requests.get(
+            f"{Config.WAZUH_INDEXER_URL}/wazuh-alerts-4.x-*/_search",
+            auth=auth,
             headers=headers,
+            json=body,
             timeout=5,
-            verify=Config.LNMS_API_VERIFY_SSL,
+            verify=getattr(Config, "WAZUH_INDEXER_VERIFY_SSL", True),
         )
-        alerts_resp.raise_for_status()
-        alerts_data = alerts_resp.json()
-        raw_alerts = alerts_data.get("alerts", alerts_data.get("data", []))
+        resp.raise_for_status()
+        hits = resp.json().get("hits", {}).get("hits", [])
 
-        # Filter by last 24 hours and sort newest-first
         filtered = []
-        for a in raw_alerts:
-            ts_str = a.get("timestamp") or ""
-            dt = _parse_lnms_timestamp(ts_str)
+        for h in hits:
+            src = h.get("_source", {})
+            ts_str = src.get("@timestamp") or src.get("timestamp") or ""
+            dt = _parse_wazuh_timestamp(ts_str)
             if dt and dt >= cutoff:
-                filtered.append((dt, a))
+                filtered.append((dt, src))
 
-        # Newest first
+        # newest first
         filtered.sort(key=lambda pair: pair[0], reverse=True)
-        filtered = [a for _, a in filtered][:limit_alerts]
+        filtered = [src for _, src in filtered][:limit]
 
-        lnms_alerts = []
+        alerts = []
         for a in filtered:
-            lnms_alerts.append(
+            alerts.append(
                 {
-                    "id": a.get("alert_id") or a.get("id"),
-                    "device": a.get("hostname") or a.get("device_id"),
-                    "severity": str(a.get("severity", "warning")).lower(),
-                    "message": a.get("rule") or a.get("details", ""),
-                    "time": a.get("timestamp") or "",
+                    "id": a.get("id") or a.get("_id") or "",
+                    "level": str(a.get("rule", {}).get("level", "")).lower(),
+                    "agent": a.get("agent", {}).get("name", ""),
+                    "rule": a.get("rule", {}).get("description", ""),
+                    "time": a.get("@timestamp") or a.get("timestamp", ""),
                 }
             )
 
-        # For now, keep using default top device data.
-        top_devices = DEFAULT_TOP_DEVICES
+        return alerts or DEFAULT_WAZUH_ALERTS
 
-        return lnms_alerts or DEFAULT_LNMS_ALERTS, top_devices
+    except Exception as e:
+        app.logger.warning(f"Wazuh indexer API error: {e}")
+        return DEFAULT_WAZUH_ALERTS
+
+def _get_lnms_top_devices(headers: Dict[str, str], limit: int = 10) -> List[Dict[str, Any]]:
+    """
+    Get 'top devices' from LibreNMS using the /devices endpoint.
+
+    For now we treat 'resource usage' as:
+      - Devices with the highest last_polled_timetaken (slowest to poll)
+      - We also pull last_ping_timetaken as an extra indicator
+
+    We map this into the existing dashboard fields:
+      - cpu / ram / storage: left as None (will show as N/A in the UI if handled)
+      - bandwidth: we use last_polled_timetaken (seconds) as a 'resource score'
+    """
+    if not getattr(Config, "LNMS_API_URL", ""):
+        return DEFAULT_TOP_DEVICES
+
+    try:
+        # Ask LibreNMS to sort devices by last_polled_timetaken descending if supported.
+        # If the install ignores order/order_type, we still sort locally as a fallback.
+        resp = requests.get(
+            f"{Config.LNMS_API_URL}/devices",
+            headers=headers,
+            params={
+                # These params are supported by list_devices on most LibreNMS installs.
+                # If not, no harm done – we'll sort the returned list ourselves.
+                "order": "last_polled_timetaken",
+                "order_type": "desc",
+                "limit": limit * 2,  # grab a few extra in case some are missing metrics
+            },
+            timeout=5,
+            verify=getattr(Config, "LNMS_API_VERIFY_SSL", True),
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        devices = data.get("devices", data.get("data", [])) or []
+        cleaned: List[Dict[str, Any]] = []
+
+        for d in devices:
+            name = d.get("display") or d.get("sysName") or d.get("hostname") or d.get("ip")
+            ip = d.get("ip") or d.get("hostname")
+
+            # These come directly from your sample JSON
+            # last_polled_timetaken ~ seconds, last_ping_timetaken ~ ms
+            def _to_float(val: Any) -> float:
+                try:
+                    return float(val)
+                except (TypeError, ValueError):
+                    return 0.0
+
+            poll_time = _to_float(d.get("last_polled_timetaken"))
+            ping_ms = _to_float(d.get("last_ping_timetaken"))
+
+            # Simple 'resource score' for now: primarily poll time, lightly weighted ping
+            resource_score = poll_time + (ping_ms / 1000.0)
+
+            cleaned.append(
+                {
+                    "name": name or "Unknown device",
+                    "ip": ip or "",
+                    # CPU / RAM / storage will stay None for now until we wire in health sensors.
+                    "cpu": None,
+                    "ram": None,
+                    "storage": None,
+                    # We'll surface this in the "Bandwidth" column for now; later we can rename in the UI.
+                    "bandwidth": resource_score,
+                }
+            )
+
+        # Sort locally as a safety net even if the API already sorted for us
+        cleaned.sort(key=lambda d: d.get("bandwidth") or 0.0, reverse=True)
+
+        if not cleaned:
+            return DEFAULT_TOP_DEVICES
+
+        return cleaned[:limit]
+
+    except Exception as e:
+        app.logger.warning(f"LNMS top devices error: {e}")
+        return DEFAULT_TOP_DEVICES
+
+
+def fetch_lnms_data(limit_alerts: int = 10, window: timedelta | None = None):
+    """
+    Fetch LNMS alerts and top devices (resource usage) from LibreNMS.
+    Returns (alerts_list, top_devices_list).
+
+    - Alerts are filtered to the given time window (default 24h).
+    - Only the top `limit_alerts` most recent alerts are returned.
+    - Top devices come from /devices and are sorted by last_polled_timetaken.
+    """
+    if window is None:
+        window = ALERT_WINDOW_CHOICES[ALERT_DEFAULT_WINDOW]
+
+    # If LNMS is disabled or not configured, return placeholders
+    if (
+        not getattr(Config, "USE_LNMS_API", False)
+        or not getattr(Config, "LNMS_API_URL", "")
+        or not getattr(Config, "LNMS_API_TOKEN", "")
+    ):
+        return DEFAULT_LNMS_ALERTS, DEFAULT_TOP_DEVICES
+
+    headers = {
+        "X-Auth-Token": Config.LNMS_API_TOKEN,
+        "Accept": "application/json",
+    }
+
+    cutoff = datetime.utcnow() - window
+
+    try:
+        # -----------------------------
+        # 1) LibreNMS Alerts
+        # -----------------------------
+        alerts_resp = requests.get(
+            f"{Config.LNMS_API_URL}/alerts",
+            # state=1 → active alerts; sort by newest first if supported
+            params={"state": 1, "limit": 200, "sort": "timestamp", "order": "desc"},
+            headers=headers,
+            timeout=5,
+            verify=getattr(Config, "LNMS_API_VERIFY_SSL", True),
+        )
+        alerts_resp.raise_for_status()
+        alerts_data = alerts_resp.json()
+        raw_alerts = alerts_data.get("alerts", alerts_data.get("data", [])) or []
+
+        filtered: list[tuple[datetime, dict]] = []
+
+        for a in raw_alerts:
+            # Try multiple possible timestamp fields
+            ts_str = (
+                a.get("timestamp")
+                or a.get("time_logged")
+                or a.get("datetime")
+                or a.get("last_changed")
+            )
+            dt: datetime | None = None
+
+            if ts_str:
+                # Common LibreNMS formats; if parsing fails we just skip time filtering
+                for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S%z"):
+                    try:
+                        dt = datetime.strptime(ts_str, fmt)
+                        break
+                    except Exception:
+                        continue
+
+            if dt is not None and dt >= cutoff:
+                filtered.append((dt, a))
+
+        # If nothing survives the time filter, fall back to just "newest N"
+        if not filtered and raw_alerts:
+            for a in raw_alerts[:limit_alerts]:
+                filtered.append((datetime.utcnow(), a))
+
+        # Sort newest → oldest and keep only N
+        filtered.sort(key=lambda pair: pair[0], reverse=True)
+        filtered = filtered[:limit_alerts]
+
+        lnms_alerts: list[dict[str, Any]] = []
+        for dt, a in filtered:
+            lnms_alerts.append(
+                {
+                    "id": a.get("alert_id") or a.get("id"),
+                    "device": a.get("hostname") or a.get("device_id") or "",
+                    "severity": str(a.get("severity", "warning")).lower(),
+                    "message": a.get("rule") or a.get("details", ""),
+                    "time": a.get("timestamp") or a.get("time_logged") or dt.isoformat(),
+                }
+            )
+
+        # -----------------------------
+        # 2) LibreNMS Top Devices
+        # -----------------------------
+        top_devices = _get_lnms_top_devices(headers=headers, limit=10)
+
+        return lnms_alerts or DEFAULT_LNMS_ALERTS, top_devices or DEFAULT_TOP_DEVICES
+
     except Exception as e:
         app.logger.warning(f"LNMS API error: {e}")
         return DEFAULT_LNMS_ALERTS, DEFAULT_TOP_DEVICES
@@ -254,15 +428,25 @@ def index():
     """
     Main dashboard page (protected).
     Pulls data from Wazuh + LNMS helpers with safe fallbacks.
+    Uses a shared time-window selector for both alert panels.
     """
-    wazuh_alerts = fetch_wazuh_alerts(limit=10)
-    lnms_alerts, top_devices = fetch_lnms_data(limit_alerts=10)
+    # Get selected time window from query string (shared by LNMS + Wazuh)
+    alert_window_key = request.args.get("lnms_window", ALERT_DEFAULT_WINDOW)
+    if alert_window_key not in ALERT_WINDOW_CHOICES:
+        alert_window_key = ALERT_DEFAULT_WINDOW
+    alert_window_delta = ALERT_WINDOW_CHOICES[alert_window_key]
+
+    wazuh_alerts = fetch_wazuh_alerts(limit=10, window=alert_window_delta)
+    lnms_alerts, top_devices = fetch_lnms_data(
+        limit_alerts=10, window=alert_window_delta
+    )
 
     return render_template(
         "index.html",
         wazuh_alerts=wazuh_alerts,
         lnms_alerts=lnms_alerts,
         top_devices=top_devices,
+        lnms_window=alert_window_key,  # reused by the dropdown
         cfg=Config,
         username=session.get("username"),
     )

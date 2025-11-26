@@ -31,13 +31,20 @@ class Config:
 
         # --- Wazuh API settings ---
     # Base URL of the Wazuh API (manager), e.g. "https://wazuh-soc2:55000"
-    WAZUH_API_URL = ""  # fill in later
-    WAZUH_API_USER = ""
-    WAZUH_API_PASSWORD = ""
+    WAZUH_API_URL = "https://10.0.80.28:55000"  # fill in later
+    WAZUH_API_USER = "wazuh-wui"
+    WAZUH_API_PASSWORD = "wazuh-wui"
     WAZUH_API_VERIFY_SSL = False  # often False with internal/self-signed
 
     # Enable/disable live Wazuh calls (False = use placeholder data)
-    USE_WAZUH_API = False
+    USE_WAZUH_API = True
+    
+    # Wazuh indexer (OpenSearch) settings for alerts
+    USE_WAZUH_INDEXER = True
+    WAZUH_INDEXER_URL = "https://10.0.80.38:9200"
+    WAZUH_INDEXER_USER = "admin"          # or another accounts
+    WAZUH_INDEXER_PASSWORD = "Soc2!WzX8#2025"  # your real password
+    WAZUH_INDEXER_VERIFY_SSL = False      # True once you wire CA certs
 
     # --- LNMS (LibreNMS) API settings ---
     # Base URL of the LibreNMS API, e.g. "https://lnms.yourdomain.com/api/v0"
