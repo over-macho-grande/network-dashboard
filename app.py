@@ -238,23 +238,63 @@ def _get_lnms_top_devices(
     Fetch top ports by bandwidth from LibreNMS and return them in the
     dashboard's top_devices format.
 
-    Uses ifInOctets_rate / ifOutOctets_rate (octets per second) and converts
-    to Mb/s. Label is ifAlias if present, otherwise ifName, otherwise port_id.
+    We call:
+      - /devices to map device_id -> hostname
+      - /ports  to get per-port traffic stats
+
+    Bandwidth is computed from:
+      - ifInOctets_rate / ifOutOctets_rate  (octets per second)
+
+    Label format:
+        "<hostname> – <ifAlias/ifName/ifDescr/port_id>"
     """
     try:
+        # ------------------------------
+        # 1) Build device_id -> hostname map
+        # ------------------------------
+        device_names: dict[str, str] = {}
+        try:
+            dev_resp = requests.get(
+                f"{base_url}/devices",
+                params={
+                    "limit": 500,
+                    "columns": "device_id,hostname",
+                },
+                headers=headers,
+                timeout=5,
+                verify=verify_ssl,
+            )
+            dev_resp.raise_for_status()
+            dev_data = dev_resp.json() or {}
+            devices = dev_data.get("devices") or dev_data.get("data") or []
+            for d in devices:
+                dev_id = d.get("device_id")
+                hostname = (d.get("hostname") or "").strip()
+                if dev_id is not None and hostname:
+                    device_names[str(dev_id)] = hostname
+        except Exception as e:
+            app.logger.warning(f"LNMS /devices API error (hostname map): {e}")
+
+        # ------------------------------
+        # 2) Get port stats
+        # ------------------------------
         ports_resp = requests.get(
             f"{base_url}/ports",
             params={
                 "limit": 500,
-                "columns": "ifAlias,ifName,port_id,ifInOctets_rate,ifOutOctets_rate",
+                # IMPORTANT: only use columns we know exist on your instance.
+                "columns": (
+                    "device_id,ifAlias,ifName,ifDescr,port_id,"
+                    "ifInOctets_rate,ifOutOctets_rate"
+                ),
             },
             headers=headers,
             timeout=5,
             verify=verify_ssl,
         )
         ports_resp.raise_for_status()
-        ports_data = ports_resp.json()
-        ports = ports_data.get("ports", ports_data.get("data", [])) or []
+        ports_data = ports_resp.json() or {}
+        ports = ports_data.get("ports") or ports_data.get("data") or []
 
         bw_entries: list[dict[str, Any]] = []
 
@@ -263,18 +303,28 @@ def _get_lnms_top_devices(
             in_rate = float(p.get("ifInOctets_rate") or 0)
             out_rate = float(p.get("ifOutOctets_rate") or 0)
             total_bits_per_second = (in_rate + out_rate) * 8.0
+            if total_bits_per_second <= 0:
+                continue  # idle port
+
             mbps = total_bits_per_second / 1_000_000.0
 
-            # Skip totally idle ports
-            if mbps <= 0:
-                continue
+            dev_id = p.get("device_id")
+            hostname = ""
+            if dev_id is not None:
+                hostname = device_names.get(str(dev_id), "")
 
-            # Prefer the human-friendly alias, then ifName, then port_id
-            label = (p.get("ifAlias") or "").strip()
-            if not label:
-                label = (p.get("ifName") or "").strip()
-            if not label:
-                label = f"port {p.get('port_id')}"
+            iface_alias = (p.get("ifAlias") or "").strip()
+            iface_name = (p.get("ifName") or "").strip()
+            iface_descr = (p.get("ifDescr") or "").strip()
+
+            base_label = (
+                iface_alias
+                or iface_name
+                or iface_descr
+                or f"port {p.get('port_id')}"
+            )
+
+            label = f"{hostname} – {base_label}" if hostname else base_label
 
             bw_entries.append(
                 {
@@ -283,7 +333,7 @@ def _get_lnms_top_devices(
                 }
             )
 
-        # Sort by highest Mb/s and keep top N
+        # Sort by bandwidth, highest first
         bw_entries.sort(key=lambda d: d["value"], reverse=True)
         bw_entries = bw_entries[:limit]
 
@@ -399,6 +449,7 @@ def fetch_lnms_data(limit_alerts: int = 10, window=None):
 
     # If LNMS is enabled, never show fake alerts; show real or nothing.
     return lnms_alerts, top_devices
+
 
 
 # -------------------------------------------------------------------
