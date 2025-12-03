@@ -51,6 +51,13 @@ class Config:
     LNMS_API_URL = "http://10.0.80.27/api/v0"  # fill in later
     LNMS_API_TOKEN = "83305c95720dd231c8abac1775b9ddc9"  # API token from LibreNMS user
     LNMS_API_VERIFY_SSL = False
-
+    
+    
+    LNMS_DB_ENABLED = True
+    LNMS_DB_HOST = "10.0.80.27"
+    LNMS_DB_PORT = 3306
+    LNMS_DB_NAME = "librenms"
+    LNMS_DB_USER = "networkdash"
+    LNMS_DB_PASSWORD = "NdWkC68cvxQa8dy2Xlvh9fmnpvkL*fnH"
     # Enable/disable live LNMS calls (False = use placeholder data)
     USE_LNMS_API = True

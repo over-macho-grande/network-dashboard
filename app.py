@@ -235,54 +235,114 @@ def _get_lnms_top_devices(
     limit: int = 10,
 ) -> dict[str, list[dict[str, Any]]]:
     """
-    Fetch top ports by bandwidth from LibreNMS and return them in the
+    Fetch top devices by resource usage from LibreNMS and return them in the
     dashboard's top_devices format.
 
-    We call:
-      - /devices to map device_id -> hostname
-      - /ports  to get per-port traffic stats
+    Currently implemented:
+      - CPU (%) via LibreNMS MySQL DB (processors table) when LNMS_DB_ENABLED is True
+      - Bandwidth (Mb/s) via LibreNMS API (/ports) using ifInOctets_rate/ifOutOctets_rate
 
-    Bandwidth is computed from:
-      - ifInOctets_rate / ifOutOctets_rate  (octets per second)
-
-    Label format:
-        "<hostname> – <ifAlias/ifName/ifDescr/port_id>"
+    Returns a dict with keys: cpu, ram, bandwidth, storage
+    (ram and storage are not yet implemented).
     """
-    try:
-        # ------------------------------
-        # 1) Build device_id -> hostname map
-        # ------------------------------
-        device_names: dict[str, str] = {}
-        try:
-            dev_resp = requests.get(
-                f"{base_url}/devices",
-                params={
-                    "limit": 500,
-                    "columns": "device_id,hostname",
-                },
-                headers=headers,
-                timeout=5,
-                verify=verify_ssl,
-            )
-            dev_resp.raise_for_status()
-            dev_data = dev_resp.json() or {}
-            devices = dev_data.get("devices") or dev_data.get("data") or []
-            for d in devices:
-                dev_id = d.get("device_id")
-                hostname = (d.get("hostname") or "").strip()
-                if dev_id is not None and hostname:
-                    device_names[str(dev_id)] = hostname
-        except Exception as e:
-            app.logger.warning(f"LNMS /devices API error (hostname map): {e}")
+    cpu_entries: list[dict[str, Any]] = []
+    bw_entries: list[dict[str, Any]] = []
 
-        # ------------------------------
-        # 2) Get port stats
-        # ------------------------------
+    # ------------------------------------------------------------------
+    # 1) CPU from LNMS DB (processors table)
+    # ------------------------------------------------------------------
+    if Config.LNMS_DB_ENABLED:
+        try:
+            try:
+                import mysql.connector as mysql
+            except Exception as e:
+                app.logger.warning(f"LNMS DB CPU: mysql.connector not available: {e}")
+            else:
+                conn = mysql.connect(
+                    host=Config.LNMS_DB_HOST,
+                    port=Config.LNMS_DB_PORT,
+                    user=Config.LNMS_DB_USER,
+                    password=Config.LNMS_DB_PASSWORD,
+                    database=Config.LNMS_DB_NAME,
+                    connection_timeout=5,
+                )
+                try:
+                    cur = conn.cursor(dictionary=True)
+                    # Top processors by usage; join to devices for hostname
+                    cur.execute(
+                        """
+                        SELECT d.hostname, p.processor_descr, p.processor_usage
+                        FROM processors p
+                        JOIN devices d ON p.device_id = d.device_id
+                        WHERE p.processor_usage IS NOT NULL
+                        ORDER BY p.processor_usage DESC
+                        LIMIT %s
+                        """,
+                        (limit,),
+                    )
+                    rows = cur.fetchall() or []
+                    for row in rows:
+                        hostname = (row.get("hostname") or "").strip()
+                        descr = (row.get("processor_descr") or "").strip()
+                        label = hostname
+                        if descr:
+                            label = f"{hostname} – {descr}" if hostname else descr
+                        if not label:
+                            label = "(unknown device)"
+
+                        val = float(row.get("processor_usage") or 0.0)
+                        cpu_entries.append(
+                            {
+                                "device": label,
+                                "value": round(val, 1),
+                            }
+                        )
+                finally:
+                    try:
+                        cur.close()
+                    except Exception:
+                        pass
+                    conn.close()
+        except Exception as e:
+            app.logger.warning(f"LNMS DB CPU query error: {e}")
+    else:
+        app.logger.debug("LNMS DB CPU disabled (Config.LNMS_DB_ENABLED is False).")
+
+    # ------------------------------------------------------------------
+    # 2) Build device_id -> hostname map from API (for bandwidth labels)
+    # ------------------------------------------------------------------
+    device_names: dict[str, str] = {}
+    try:
+        dev_resp = requests.get(
+            f"{base_url}/devices",
+            params={
+                "limit": 500,
+                "columns": "device_id,hostname",
+            },
+            headers=headers,
+            timeout=5,
+            verify=verify_ssl,
+        )
+        dev_resp.raise_for_status()
+        dev_data = dev_resp.json() or {}
+        devices = dev_data.get("devices") or dev_data.get("data") or []
+        for d in devices:
+            dev_id = d.get("device_id")
+            hostname = (d.get("hostname") or "").strip()
+            if dev_id is not None and hostname:
+                device_names[str(dev_id)] = hostname
+    except Exception as e:
+        app.logger.warning(f"LNMS /devices API error (hostname map): {e}")
+
+    # ------------------------------------------------------------------
+    # 3) Bandwidth from /ports API (same as your working version)
+    # ------------------------------------------------------------------
+    try:
         ports_resp = requests.get(
             f"{base_url}/ports",
             params={
                 "limit": 500,
-                # IMPORTANT: only use columns we know exist on your instance.
+                # Only columns we know exist on your instance.
                 "columns": (
                     "device_id,ifAlias,ifName,ifDescr,port_id,"
                     "ifInOctets_rate,ifOutOctets_rate"
@@ -295,8 +355,6 @@ def _get_lnms_top_devices(
         ports_resp.raise_for_status()
         ports_data = ports_resp.json() or {}
         ports = ports_data.get("ports") or ports_data.get("data") or []
-
-        bw_entries: list[dict[str, Any]] = []
 
         for p in ports:
             # Octets (bytes) per second -> bits/sec -> Mb/s
@@ -333,25 +391,23 @@ def _get_lnms_top_devices(
                 }
             )
 
-        # Sort by bandwidth, highest first
         bw_entries.sort(key=lambda d: d["value"], reverse=True)
         bw_entries = bw_entries[:limit]
-
-        return {
-            "cpu": [],
-            "ram": [],
-            "bandwidth": bw_entries,
-            "storage": [],
-        }
-
     except Exception as e:
         app.logger.warning(f"LNMS /ports API error: {e}")
-        return {
-            "cpu": [],
-            "ram": [],
-            "bandwidth": [],
-            "storage": [],
-        }
+        bw_entries = []
+
+    # ------------------------------------------------------------------
+    # 4) Return in dashboard format
+    # ------------------------------------------------------------------
+    return {
+        "cpu": cpu_entries,
+        "ram": [],
+        "bandwidth": bw_entries,
+        "storage": [],
+    }
+
+
 
 
 def fetch_lnms_data(limit_alerts: int = 10, window=None):
