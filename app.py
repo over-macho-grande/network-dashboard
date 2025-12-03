@@ -8,6 +8,14 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
 
+EMPTY_TOP_DEVICES = {
+    "cpu": [],
+    "ram": [],
+    "bandwidth": [],
+    "storage": [],
+}
+
+
 # -------------------------------------------------------------------
 # App setup
 # -------------------------------------------------------------------
@@ -220,185 +228,177 @@ def fetch_wazuh_alerts(limit: int = 10, window: timedelta | None = None):
         app.logger.warning(f"Wazuh indexer API error: {e}")
         return DEFAULT_WAZUH_ALERTS
 
-def _get_lnms_top_devices(headers: Dict[str, str], limit: int = 10) -> List[Dict[str, Any]]:
+def _get_lnms_top_devices(
+    base_url: str,
+    headers: dict[str, str],
+    verify_ssl: bool,
+    limit: int = 10,
+) -> dict[str, list[dict[str, Any]]]:
     """
-    Get 'top devices' from LibreNMS using the /devices endpoint.
+    Fetch top ports by bandwidth from LibreNMS and return them in the
+    dashboard's top_devices format.
 
-    For now we treat 'resource usage' as:
-      - Devices with the highest last_polled_timetaken (slowest to poll)
-      - We also pull last_ping_timetaken as an extra indicator
-
-    We map this into the existing dashboard fields:
-      - cpu / ram / storage: left as None (will show as N/A in the UI if handled)
-      - bandwidth: we use last_polled_timetaken (seconds) as a 'resource score'
+    Uses ifInOctets_rate / ifOutOctets_rate (octets per second) and converts
+    to Mb/s. Label is ifAlias if present, otherwise ifName, otherwise port_id.
     """
-    if not getattr(Config, "LNMS_API_URL", ""):
-        return DEFAULT_TOP_DEVICES
-
     try:
-        # Ask LibreNMS to sort devices by last_polled_timetaken descending if supported.
-        # If the install ignores order/order_type, we still sort locally as a fallback.
-        resp = requests.get(
-            f"{Config.LNMS_API_URL}/devices",
-            headers=headers,
+        ports_resp = requests.get(
+            f"{base_url}/ports",
             params={
-                # These params are supported by list_devices on most LibreNMS installs.
-                # If not, no harm done – we'll sort the returned list ourselves.
-                "order": "last_polled_timetaken",
-                "order_type": "desc",
-                "limit": limit * 2,  # grab a few extra in case some are missing metrics
+                "limit": 500,
+                "columns": "ifAlias,ifName,port_id,ifInOctets_rate,ifOutOctets_rate",
             },
+            headers=headers,
             timeout=5,
-            verify=getattr(Config, "LNMS_API_VERIFY_SSL", True),
+            verify=verify_ssl,
         )
-        resp.raise_for_status()
-        data = resp.json()
+        ports_resp.raise_for_status()
+        ports_data = ports_resp.json()
+        ports = ports_data.get("ports", ports_data.get("data", [])) or []
 
-        devices = data.get("devices", data.get("data", [])) or []
-        cleaned: List[Dict[str, Any]] = []
+        bw_entries: list[dict[str, Any]] = []
 
-        for d in devices:
-            name = d.get("display") or d.get("sysName") or d.get("hostname") or d.get("ip")
-            ip = d.get("ip") or d.get("hostname")
+        for p in ports:
+            # Octets (bytes) per second -> bits/sec -> Mb/s
+            in_rate = float(p.get("ifInOctets_rate") or 0)
+            out_rate = float(p.get("ifOutOctets_rate") or 0)
+            total_bits_per_second = (in_rate + out_rate) * 8.0
+            mbps = total_bits_per_second / 1_000_000.0
 
-            # These come directly from your sample JSON
-            # last_polled_timetaken ~ seconds, last_ping_timetaken ~ ms
-            def _to_float(val: Any) -> float:
-                try:
-                    return float(val)
-                except (TypeError, ValueError):
-                    return 0.0
+            # Skip totally idle ports
+            if mbps <= 0:
+                continue
 
-            poll_time = _to_float(d.get("last_polled_timetaken"))
-            ping_ms = _to_float(d.get("last_ping_timetaken"))
+            # Prefer the human-friendly alias, then ifName, then port_id
+            label = (p.get("ifAlias") or "").strip()
+            if not label:
+                label = (p.get("ifName") or "").strip()
+            if not label:
+                label = f"port {p.get('port_id')}"
 
-            # Simple 'resource score' for now: primarily poll time, lightly weighted ping
-            resource_score = poll_time + (ping_ms / 1000.0)
-
-            cleaned.append(
+            bw_entries.append(
                 {
-                    "name": name or "Unknown device",
-                    "ip": ip or "",
-                    # CPU / RAM / storage will stay None for now until we wire in health sensors.
-                    "cpu": None,
-                    "ram": None,
-                    "storage": None,
-                    # We'll surface this in the "Bandwidth" column for now; later we can rename in the UI.
-                    "bandwidth": resource_score,
+                    "device": label,
+                    "value": round(mbps, 1),
                 }
             )
 
-        # Sort locally as a safety net even if the API already sorted for us
-        cleaned.sort(key=lambda d: d.get("bandwidth") or 0.0, reverse=True)
+        # Sort by highest Mb/s and keep top N
+        bw_entries.sort(key=lambda d: d["value"], reverse=True)
+        bw_entries = bw_entries[:limit]
 
-        if not cleaned:
-            return DEFAULT_TOP_DEVICES
-
-        return cleaned[:limit]
+        return {
+            "cpu": [],
+            "ram": [],
+            "bandwidth": bw_entries,
+            "storage": [],
+        }
 
     except Exception as e:
-        app.logger.warning(f"LNMS top devices error: {e}")
-        return DEFAULT_TOP_DEVICES
+        app.logger.warning(f"LNMS /ports API error: {e}")
+        return {
+            "cpu": [],
+            "ram": [],
+            "bandwidth": [],
+            "storage": [],
+        }
 
 
-def fetch_lnms_data(limit_alerts: int = 10, window: timedelta | None = None):
+def fetch_lnms_data(limit_alerts: int = 10, window=None):
     """
-    Fetch LNMS alerts and top devices (resource usage) from LibreNMS.
-    Returns (alerts_list, top_devices_list).
+    Fetch LNMS alerts and top bandwidth devices.
 
-    - Alerts are filtered to the given time window (default 24h).
-    - Only the top `limit_alerts` most recent alerts are returned.
-    - Top devices come from /devices and are sorted by last_polled_timetaken.
+    - If LNMS API is disabled or misconfigured, returns:
+        ([], DEFAULT_TOP_DEVICES)
+    - If /alerts fails, we log and show no LNMS alerts.
+    - If /ports fails, we log and fall back to DEFAULT_TOP_DEVICES.
     """
-    if window is None:
-        window = ALERT_WINDOW_CHOICES[ALERT_DEFAULT_WINDOW]
-
-    # If LNMS is disabled or not configured, return placeholders
+    # If LNMS integration is disabled or missing config, just return demo top-devices
     if (
         not getattr(Config, "USE_LNMS_API", False)
         or not getattr(Config, "LNMS_API_URL", "")
         or not getattr(Config, "LNMS_API_TOKEN", "")
     ):
-        return DEFAULT_LNMS_ALERTS, DEFAULT_TOP_DEVICES
+        return [], DEFAULT_TOP_DEVICES
 
-    headers = {
-        "X-Auth-Token": Config.LNMS_API_TOKEN,
-        "Accept": "application/json",
-    }
+    base_url = Config.LNMS_API_URL.rstrip("/")
+    headers = {"X-Auth-Token": Config.LNMS_API_TOKEN}
+    verify_ssl = getattr(Config, "LNMS_API_VERIFY_SSL", True)
 
+    # Time window for alerts (window is a timedelta or None)
+    if window is None:
+        window = ALERT_WINDOW_CHOICES[ALERT_DEFAULT_WINDOW]
     cutoff = datetime.utcnow() - window
 
+    lnms_alerts: list[dict] = []
+
+    # ---------------------------
+    # 1) Alerts (non-fatal if this fails)
+    # ---------------------------
     try:
-        # -----------------------------
-        # 1) LibreNMS Alerts
-        # -----------------------------
         alerts_resp = requests.get(
-            f"{Config.LNMS_API_URL}/alerts",
-            # state=1 → active alerts; sort by newest first if supported
-            params={"state": 1, "limit": 200, "sort": "timestamp", "order": "desc"},
+            f"{base_url}/alerts",
             headers=headers,
+            params={
+                # keep params simple to avoid 400s
+                "limit": limit_alerts * 5,
+                "sort": "timestamp",
+                "order": "desc",
+            },
             timeout=5,
-            verify=getattr(Config, "LNMS_API_VERIFY_SSL", True),
+            verify=verify_ssl,
         )
+
         alerts_resp.raise_for_status()
-        alerts_data = alerts_resp.json()
-        raw_alerts = alerts_data.get("alerts", alerts_data.get("data", [])) or []
+        data = alerts_resp.json() or {}
+        raw_alerts = data.get("alerts") or data.get("data") or []
 
+        # Filter by time window and sort newest first
         filtered: list[tuple[datetime, dict]] = []
-
         for a in raw_alerts:
-            # Try multiple possible timestamp fields
-            ts_str = (
+            ts = (
                 a.get("timestamp")
                 or a.get("time_logged")
                 or a.get("datetime")
-                or a.get("last_changed")
+                or ""
             )
-            dt: datetime | None = None
-
-            if ts_str:
-                # Common LibreNMS formats; if parsing fails we just skip time filtering
-                for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S%z"):
-                    try:
-                        dt = datetime.strptime(ts_str, fmt)
-                        break
-                    except Exception:
-                        continue
-
-            if dt is not None and dt >= cutoff:
+            dt = _parse_lnms_timestamp(ts)
+            if dt and dt >= cutoff:
                 filtered.append((dt, a))
 
-        # If nothing survives the time filter, fall back to just "newest N"
-        if not filtered and raw_alerts:
-            for a in raw_alerts[:limit_alerts]:
-                filtered.append((datetime.utcnow(), a))
-
-        # Sort newest → oldest and keep only N
         filtered.sort(key=lambda pair: pair[0], reverse=True)
         filtered = filtered[:limit_alerts]
 
-        lnms_alerts: list[dict[str, Any]] = []
         for dt, a in filtered:
             lnms_alerts.append(
                 {
-                    "id": a.get("alert_id") or a.get("id"),
-                    "device": a.get("hostname") or a.get("device_id") or "",
-                    "severity": str(a.get("severity", "warning")).lower(),
-                    "message": a.get("rule") or a.get("details", ""),
-                    "time": a.get("timestamp") or a.get("time_logged") or dt.isoformat(),
+                    "id": a.get("id") or a.get("alert_id"),
+                    "device": a.get("device")
+                    or a.get("hostname")
+                    or a.get("host")
+                    or "",
+                    "severity": a.get("severity") or a.get("state") or "",
+                    "message": a.get("message") or a.get("note") or "",
+                    "time": dt.strftime("%Y-%m-%d %H:%M"),
                 }
             )
-
-        # -----------------------------
-        # 2) LibreNMS Top Devices
-        # -----------------------------
-        top_devices = _get_lnms_top_devices(headers=headers, limit=10)
-
-        return lnms_alerts or DEFAULT_LNMS_ALERTS, top_devices or DEFAULT_TOP_DEVICES
-
     except Exception as e:
-        app.logger.warning(f"LNMS API error: {e}")
-        return DEFAULT_LNMS_ALERTS, DEFAULT_TOP_DEVICES
+        app.logger.warning(f"LNMS /alerts API error: {e}")
+
+    # ---------------------------
+    # 2) Top bandwidth devices
+    # ---------------------------
+    # Re-use the helper so the shape is always:
+    # {"cpu": [], "ram": [], "bandwidth": [...], "storage": []}
+    top_devices = _get_lnms_top_devices(
+        base_url=base_url,
+        headers=headers,
+        verify_ssl=verify_ssl,
+        limit=10,
+    )
+
+    # If LNMS is enabled, never show fake alerts; show real or nothing.
+    return lnms_alerts, top_devices
 
 
 # -------------------------------------------------------------------

@@ -40,8 +40,6 @@
 
   <!-- LNMS alerts -->
   <div class="card">
-
-    <!-- Header with dropdown -->
     <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
       <h2>LNMS Alerts</h2>
 
@@ -86,44 +84,68 @@
 
 </section>
 
+<!-- Top Devices Section -->
 <section class="card">
   <h2>Top 10 Devices by Resource Usage</h2>
+
   <div class="top-grid">
+
+    <!-- CPU -->
     <div>
       <h3>CPU (%)</h3>
-      <ul>
-        {% for d in top_devices.cpu %}
-          <li>{{ d.device }} – {{ d.value }}%</li>
-        {% endfor %}
-      </ul>
+      {% if top_devices.cpu %}
+        <ul>
+          {% for d in top_devices.cpu %}
+            <li>{{ d.device }} – {{ d.value }}%</li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="text-muted">No CPU data available.</p>
+      {% endif %}
     </div>
 
+    <!-- RAM -->
     <div>
       <h3>RAM (%)</h3>
-      <ul>
-        {% for d in top_devices.ram %}
-          <li>{{ d.device }} – {{ d.value }}%</li>
-        {% endfor %}
-      </ul>
+      {% if top_devices.ram %}
+        <ul>
+          {% for d in top_devices.ram %}
+            <li>{{ d.device }} – {{ d.value }}%</li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="text-muted">No RAM data available.</p>
+      {% endif %}
     </div>
 
+    <!-- Bandwidth -->
     <div>
       <h3>Bandwidth (Mb/s)</h3>
-      <ul>
-        {% for d in top_devices.bandwidth %}
-          <li>{{ d.device }} – {{ d.value }} Mb/s</li>
-        {% endfor %}
-      </ul>
+      {% if top_devices.bandwidth %}
+        <ul>
+          {% for d in top_devices.bandwidth %}
+            <li>{{ d.device }} – {{ d.value }}</li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="text-muted">No bandwidth data available.</p>
+      {% endif %}
     </div>
 
+    <!-- Storage -->
     <div>
       <h3>Storage Used (%)</h3>
-      <ul>
-        {% for d in top_devices.storage %}
-          <li>{{ d.device }} – {{ d.value }}%</li>
-        {% endfor %}
-      </ul>
+      {% if top_devices.storage %}
+        <ul>
+          {% for d in top_devices.storage %}
+            <li>{{ d.device }} – {{ d.value }}%</li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="text-muted">No storage data available.</p>
+      {% endif %}
     </div>
+
   </div>
 </section>
 
