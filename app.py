@@ -241,16 +241,18 @@ def _get_lnms_top_devices(
     Implemented:
       - CPU (%) via LibreNMS MySQL DB (processors table)
       - RAM (%) via LibreNMS MySQL DB (mempools table)
+      - Storage Used (%) via LibreNMS MySQL DB (storage table)
       - Bandwidth (Mb/s) via LibreNMS API (/ports) using ifInOctets_rate/ifOutOctets_rate
 
     Returns a dict with keys: cpu, ram, bandwidth, storage.
     """
     cpu_entries: list[dict[str, Any]] = []
     ram_entries: list[dict[str, Any]] = []
+    storage_entries: list[dict[str, Any]] = []
     bw_entries: list[dict[str, Any]] = []
 
     # ------------------------------------------------------------------
-    # 1) CPU + RAM from LNMS DB
+    # 1) CPU, RAM, STORAGE from LNMS DB
     # ------------------------------------------------------------------
     if Config.LNMS_DB_ENABLED:
         try:
@@ -330,6 +332,36 @@ def _get_lnms_top_devices(
                             }
                         )
 
+                    # --- STORAGE: top storage by percentage used ---
+                    cur.execute(
+                        """
+                        SELECT d.hostname, s.storage_descr, s.storage_perc
+                        FROM storage s
+                        JOIN devices d ON s.device_id = d.device_id
+                        WHERE s.storage_perc IS NOT NULL
+                        ORDER BY s.storage_perc DESC
+                        LIMIT %s
+                        """,
+                        (limit,),
+                    )
+                    rows = cur.fetchall() or []
+                    for row in rows:
+                        hostname = (row.get("hostname") or "").strip()
+                        descr = (row.get("storage_descr") or "").strip()
+                        label = hostname
+                        if descr:
+                            label = f"{hostname} – {descr}" if hostname else descr
+                        if not label:
+                            label = "(unknown device)"
+
+                        val = float(row.get("storage_perc") or 0.0)
+                        storage_entries.append(
+                            {
+                                "device": label,
+                                "value": round(val, 1),
+                            }
+                        )
+
                 finally:
                     try:
                         cur.close()
@@ -337,7 +369,7 @@ def _get_lnms_top_devices(
                         pass
                     conn.close()
         except Exception as e:
-            app.logger.warning(f"LNMS DB CPU/RAM query error: {e}")
+            app.logger.warning(f"LNMS DB CPU/RAM/Storage query error: {e}")
     else:
         app.logger.debug("LNMS DB disabled (Config.LNMS_DB_ENABLED is False).")
 
@@ -368,7 +400,7 @@ def _get_lnms_top_devices(
         app.logger.warning(f"LNMS /devices API error (hostname map): {e}")
 
     # ------------------------------------------------------------------
-    # 3) Bandwidth from /ports API (same as your working version)
+    # 3) Bandwidth from /ports API
     # ------------------------------------------------------------------
     try:
         ports_resp = requests.get(
@@ -435,10 +467,8 @@ def _get_lnms_top_devices(
         "cpu": cpu_entries,
         "ram": ram_entries,
         "bandwidth": bw_entries,
-        "storage": [],
+        "storage": storage_entries,
     }
-
-
 
 
 
