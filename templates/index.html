@@ -124,7 +124,7 @@
       {% if top_devices.bandwidth %}
         <ul>
           {% for d in top_devices.bandwidth %}
-            <li>{{ d.device }} – {{ d.value }}</li>
+            <li>{{ d.device }} – {{ '%.1f'|format(d.value / 1000) }} Mb/s</li>
           {% endfor %}
         </ul>
       {% else %}
