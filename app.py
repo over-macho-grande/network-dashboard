@@ -238,25 +238,26 @@ def _get_lnms_top_devices(
     Fetch top devices by resource usage from LibreNMS and return them in the
     dashboard's top_devices format.
 
-    Currently implemented:
-      - CPU (%) via LibreNMS MySQL DB (processors table) when LNMS_DB_ENABLED is True
+    Implemented:
+      - CPU (%) via LibreNMS MySQL DB (processors table)
+      - RAM (%) via LibreNMS MySQL DB (mempools table)
       - Bandwidth (Mb/s) via LibreNMS API (/ports) using ifInOctets_rate/ifOutOctets_rate
 
-    Returns a dict with keys: cpu, ram, bandwidth, storage
-    (ram and storage are not yet implemented).
+    Returns a dict with keys: cpu, ram, bandwidth, storage.
     """
     cpu_entries: list[dict[str, Any]] = []
+    ram_entries: list[dict[str, Any]] = []
     bw_entries: list[dict[str, Any]] = []
 
     # ------------------------------------------------------------------
-    # 1) CPU from LNMS DB (processors table)
+    # 1) CPU + RAM from LNMS DB
     # ------------------------------------------------------------------
     if Config.LNMS_DB_ENABLED:
         try:
             try:
                 import mysql.connector as mysql
             except Exception as e:
-                app.logger.warning(f"LNMS DB CPU: mysql.connector not available: {e}")
+                app.logger.warning(f"LNMS DB: mysql.connector not available: {e}")
             else:
                 conn = mysql.connect(
                     host=Config.LNMS_DB_HOST,
@@ -268,7 +269,8 @@ def _get_lnms_top_devices(
                 )
                 try:
                     cur = conn.cursor(dictionary=True)
-                    # Top processors by usage; join to devices for hostname
+
+                    # --- CPU: top processors by usage ---
                     cur.execute(
                         """
                         SELECT d.hostname, p.processor_descr, p.processor_usage
@@ -297,6 +299,37 @@ def _get_lnms_top_devices(
                                 "value": round(val, 1),
                             }
                         )
+
+                    # --- RAM: top mempools by percentage ---
+                    cur.execute(
+                        """
+                        SELECT d.hostname, mp.mempool_descr, mp.mempool_perc
+                        FROM mempools mp
+                        JOIN devices d ON mp.device_id = d.device_id
+                        WHERE mp.mempool_perc IS NOT NULL
+                        ORDER BY mp.mempool_perc DESC
+                        LIMIT %s
+                        """,
+                        (limit,),
+                    )
+                    rows = cur.fetchall() or []
+                    for row in rows:
+                        hostname = (row.get("hostname") or "").strip()
+                        descr = (row.get("mempool_descr") or "").strip()
+                        label = hostname
+                        if descr:
+                            label = f"{hostname} – {descr}" if hostname else descr
+                        if not label:
+                            label = "(unknown device)"
+
+                        val = float(row.get("mempool_perc") or 0.0)
+                        ram_entries.append(
+                            {
+                                "device": label,
+                                "value": round(val, 1),
+                            }
+                        )
+
                 finally:
                     try:
                         cur.close()
@@ -304,9 +337,9 @@ def _get_lnms_top_devices(
                         pass
                     conn.close()
         except Exception as e:
-            app.logger.warning(f"LNMS DB CPU query error: {e}")
+            app.logger.warning(f"LNMS DB CPU/RAM query error: {e}")
     else:
-        app.logger.debug("LNMS DB CPU disabled (Config.LNMS_DB_ENABLED is False).")
+        app.logger.debug("LNMS DB disabled (Config.LNMS_DB_ENABLED is False).")
 
     # ------------------------------------------------------------------
     # 2) Build device_id -> hostname map from API (for bandwidth labels)
@@ -342,7 +375,6 @@ def _get_lnms_top_devices(
             f"{base_url}/ports",
             params={
                 "limit": 500,
-                # Only columns we know exist on your instance.
                 "columns": (
                     "device_id,ifAlias,ifName,ifDescr,port_id,"
                     "ifInOctets_rate,ifOutOctets_rate"
@@ -357,7 +389,6 @@ def _get_lnms_top_devices(
         ports = ports_data.get("ports") or ports_data.get("data") or []
 
         for p in ports:
-            # Octets (bytes) per second -> bits/sec -> Mb/s
             in_rate = float(p.get("ifInOctets_rate") or 0)
             out_rate = float(p.get("ifOutOctets_rate") or 0)
             total_bits_per_second = (in_rate + out_rate) * 8.0
@@ -402,10 +433,11 @@ def _get_lnms_top_devices(
     # ------------------------------------------------------------------
     return {
         "cpu": cpu_entries,
-        "ram": [],
+        "ram": ram_entries,
         "bandwidth": bw_entries,
         "storage": [],
     }
+
 
 
 
