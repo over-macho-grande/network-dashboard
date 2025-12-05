@@ -152,18 +152,29 @@ def _get_lnms_top_devices(base_url: str, headers: dict[str, str],
                     val = float(row.get("processor_usage") or 0.0)
                     cpu_entries.append({"device": label, "value": round(val, 1)})
 
-                # RAM
+                # RAM – focus on “real” memory pools, exclude cache/buffers/swap/virtual
                 cur.execute(
                     """
                     SELECT d.hostname, mp.mempool_descr, mp.mempool_perc
                     FROM mempools mp
                     JOIN devices d ON mp.device_id = d.device_id
                     WHERE mp.mempool_perc IS NOT NULL
+                    AND (
+                            mp.mempool_descr LIKE '%Physical%'
+                        OR mp.mempool_descr LIKE 'Memory%'
+                        OR mp.mempool_descr LIKE 'System Memory%'
+                        OR mp.mempool_descr LIKE 'Main Memory%'
+                    )
+                    AND mp.mempool_descr NOT LIKE '%Cached%'
+                    AND mp.mempool_descr NOT LIKE '%Buffer%'
+                    AND mp.mempool_descr NOT LIKE '%Swap%'
+                    AND mp.mempool_descr NOT LIKE '%Virtual%'
                     ORDER BY mp.mempool_perc DESC
                     LIMIT %s
                     """,
                     (limit,),
                 )
+
                 for row in cur.fetchall() or []:
                     hostname = (row.get("hostname") or "").strip()
                     descr = (row.get("mempool_descr") or "").strip()
