@@ -61,3 +61,6 @@ class Config:
     LNMS_DB_PASSWORD = "NdWkC68cvxQa8dy2Xlvh9fmnpvkL*fnH"
     # Enable/disable live LNMS calls (False = use placeholder data)
     USE_LNMS_API = True
+
+    # Grafana settings for embedded panels
+    GRAFANA_URL = "http://10.0.80.50:3000"

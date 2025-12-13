@@ -87,6 +87,7 @@
 <!-- Top Devices Section -->
 <section class="card">
   <h2>Top 10 Devices by Resource Usage</h2>
+  <p class="text-muted" style="margin-top: -0.5rem; margin-bottom: 1rem; font-size: 0.85rem;">Click any device name to view detailed information</p>
 
   <div class="top-grid">
 
@@ -94,9 +95,18 @@
     <div>
       <h3>CPU (%)</h3>
       {% if top_devices.cpu %}
-        <ul>
+        <ul class="device-list">
           {% for d in top_devices.cpu %}
-            <li>{{ d.device }} – {{ d.value }}%</li>
+            <li>
+              {% if d.device_id %}
+                <a href="{{ url_for('device_detail', device_id=d.device_id) }}" class="device-link">
+                  {{ d.device }}
+                </a>
+              {% else %}
+                {{ d.device }}
+              {% endif %}
+              <span class="device-value {{ 'value-high' if d.value >= 80 else ('value-medium' if d.value >= 60 else '') }}">{{ d.value }}%</span>
+            </li>
           {% endfor %}
         </ul>
       {% else %}
@@ -108,9 +118,18 @@
     <div>
       <h3>RAM (%)</h3>
       {% if top_devices.ram %}
-        <ul>
+        <ul class="device-list">
           {% for d in top_devices.ram %}
-            <li>{{ d.device }} – {{ d.value }}%</li>
+            <li>
+              {% if d.device_id %}
+                <a href="{{ url_for('device_detail', device_id=d.device_id) }}" class="device-link">
+                  {{ d.device }}
+                </a>
+              {% else %}
+                {{ d.device }}
+              {% endif %}
+              <span class="device-value {{ 'value-high' if d.value >= 80 else ('value-medium' if d.value >= 60 else '') }}">{{ d.value }}%</span>
+            </li>
           {% endfor %}
         </ul>
       {% else %}
@@ -120,11 +139,20 @@
 
     <!-- Bandwidth -->
     <div>
-      <h3>Bandwidth (Mb/s)</h3>
+      <h3>Bandwidth (Mbps)</h3>
       {% if top_devices.bandwidth %}
-        <ul>
+        <ul class="device-list">
           {% for d in top_devices.bandwidth %}
-            <li>{{ d.device }} – {{ '%.1f'|format(d.value / 1000) }} Mb/s</li>
+            <li>
+              {% if d.device_id %}
+                <a href="{{ url_for('device_detail', device_id=d.device_id) }}" class="device-link">
+                  {{ d.device }}
+                </a>
+              {% else %}
+                {{ d.device }}
+              {% endif %}
+              <span class="device-value">{{ '%.1f'|format(d.value) }} Mbps</span>
+            </li>
           {% endfor %}
         </ul>
       {% else %}
@@ -136,9 +164,18 @@
     <div>
       <h3>Storage Used (%)</h3>
       {% if top_devices.storage %}
-        <ul>
+        <ul class="device-list">
           {% for d in top_devices.storage %}
-            <li>{{ d.device }} – {{ d.value }}%</li>
+            <li>
+              {% if d.device_id %}
+                <a href="{{ url_for('device_detail', device_id=d.device_id) }}" class="device-link">
+                  {{ d.device }}
+                </a>
+              {% else %}
+                {{ d.device }}
+              {% endif %}
+              <span class="device-value {{ 'value-high' if d.value >= 80 else ('value-medium' if d.value >= 60 else '') }}">{{ d.value }}%</span>
+            </li>
           {% endfor %}
         </ul>
       {% else %}

@@ -9,6 +9,13 @@ from typing import Any, Dict, List
 from services import (
     fetch_wazuh_alerts,
     fetch_lnms_data,
+    fetch_device_details,
+    fetch_device_processors,
+    fetch_device_mempools,
+    fetch_device_storage,
+    fetch_device_ports,
+    fetch_wazuh_agent_by_ip,
+    fetch_wazuh_alerts_for_agent,
     ALERT_WINDOW_CHOICES,
     ALERT_DEFAULT_WINDOW,
 )
@@ -158,6 +165,103 @@ def index():
     )
 
 
+@app.route("/device/<int:device_id>")
+@login_required
+def device_detail(device_id: int):
+    """
+    Device detail page showing comprehensive information from LNMS and Wazuh.
+    Displays:
+    - Device basic info (hostname, OS, hardware, status, uptime)
+    - CPU/Processor metrics
+    - Memory pool metrics
+    - Storage metrics
+    - Network port/bandwidth metrics
+    - Wazuh agent info (if matched by IP)
+    - Recent Wazuh alerts for this device
+    """
+    # Fetch device info from LNMS
+    device = fetch_device_details(device_id)
+    
+    if not device:
+        flash("Device not found.", "error")
+        return redirect(url_for("index"))
+    
+    # Fetch all resource metrics
+    processors = fetch_device_processors(device_id)
+    mempools = fetch_device_mempools(device_id)
+    storage = fetch_device_storage(device_id)
+    ports = fetch_device_ports(device_id)
+    
+    # Try to find matching Wazuh agent by IP
+    wazuh_agent = None
+    wazuh_alerts = []
+    
+    # Get IP address - try ip_address field first, then hostname
+    device_ip = device.get("ip_address") or device.get("hostname")
+    
+    if device_ip:
+        wazuh_agent = fetch_wazuh_agent_by_ip(device_ip)
+        
+        # If we found a Wazuh agent, get recent alerts
+        if wazuh_agent:
+            agent_id = wazuh_agent.get("id")
+            if agent_id:
+                alert_window = ALERT_WINDOW_CHOICES.get(
+                    request.args.get("alert_window", "24h"),
+                    ALERT_WINDOW_CHOICES["24h"]
+                )
+                wazuh_alerts = fetch_wazuh_alerts_for_agent(
+                    agent_id, 
+                    limit=50,
+                    window=alert_window
+                )
+    
+    # Calculate summary stats
+    summary = {
+        "cpu_avg": None,
+        "ram_avg": None,
+        "storage_max": None,
+        "active_ports": 0,
+        "total_bandwidth_mbps": 0,
+    }
+    
+    if processors:
+        usages = [p.get("processor_usage", 0) for p in processors if p.get("processor_usage") is not None]
+        if usages:
+            summary["cpu_avg"] = round(sum(usages) / len(usages), 1)
+    
+    if mempools:
+        percs = [m.get("mempool_perc", 0) for m in mempools if m.get("mempool_perc") is not None]
+        if percs:
+            summary["ram_avg"] = round(sum(percs) / len(percs), 1)
+    
+    if storage:
+        percs = [s.get("storage_perc", 0) for s in storage if s.get("storage_perc") is not None]
+        if percs:
+            summary["storage_max"] = max(percs)
+    
+    if ports:
+        summary["active_ports"] = sum(1 for p in ports if p.get("ifOperStatus") == "up")
+        summary["total_bandwidth_mbps"] = round(
+            sum(p.get("bandwidth_total_mbps", 0) for p in ports), 2
+        )
+    
+    return render_template(
+        "device.html",
+        device=device,
+        processors=processors,
+        mempools=mempools,
+        storage=storage,
+        ports=ports,
+        wazuh_agent=wazuh_agent,
+        wazuh_alerts=wazuh_alerts,
+        summary=summary,
+        alert_window=request.args.get("alert_window", "24h"),
+        cfg=Config,
+        username=session.get("username"),
+    )
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     """
@@ -249,5 +353,5 @@ def healthz():
 
 
 if __name__ == "__main__":
-    # Dev mode: later we’ll run this via gunicorn + systemd + nginx
+    # Dev mode: later we'll run this via gunicorn + systemd + nginx
     app.run(host="0.0.0.0", port=5000, debug=True)

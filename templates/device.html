@@ -1,0 +1,349 @@
+{% extends "base.html" %}
+
+{% block title %}{{ device.sysName or device.hostname }} - Device Details{% endblock %}
+
+{% block content %}
+<div class="device-header">
+  <div class="device-header-left">
+    <a href="{{ url_for('index') }}" class="back-link">&larr; Back to Dashboard</a>
+    <h1>{{ device.sysName or device.hostname }}</h1>
+    <p class="device-subtitle">{{ device.hostname }}{% if device.ip_address and device.ip_address != device.hostname %} ({{ device.ip_address }}){% endif %}</p>
+  </div>
+  <div class="device-header-right">
+    <span class="status-badge status-{{ 'up' if device.status == 1 else 'down' }}">
+      {{ device.status_text }}
+    </span>
+  </div>
+</div>
+
+<!-- Summary Cards -->
+<section class="summary-grid">
+  <div class="summary-card">
+    <div class="summary-icon cpu-icon">CPU</div>
+    <div class="summary-value">{{ summary.cpu_avg or 'N/A' }}{% if summary.cpu_avg %}%{% endif %}</div>
+    <div class="summary-label">Average CPU</div>
+  </div>
+  <div class="summary-card">
+    <div class="summary-icon ram-icon">RAM</div>
+    <div class="summary-value">{{ summary.ram_avg or 'N/A' }}{% if summary.ram_avg %}%{% endif %}</div>
+    <div class="summary-label">Average Memory</div>
+  </div>
+  <div class="summary-card">
+    <div class="summary-icon storage-icon">DISK</div>
+    <div class="summary-value">{{ summary.storage_max or 'N/A' }}{% if summary.storage_max %}%{% endif %}</div>
+    <div class="summary-label">Max Storage Used</div>
+  </div>
+  <div class="summary-card">
+    <div class="summary-icon bandwidth-icon">NET</div>
+    <div class="summary-value">{{ summary.total_bandwidth_mbps }} Mbps</div>
+    <div class="summary-label">{{ summary.active_ports }} Active Ports</div>
+  </div>
+</section>
+
+<!-- Grafana Embedded Panels -->
+<section class="card grafana-section">
+  <div class="grafana-header">
+    <h2>Resource Metrics (Live)</h2>
+    <a href="{{ cfg.GRAFANA_URL }}/d/device-details/device-details?var-hostname={{ device.hostname }}&from=now-6h&to=now&kiosk" 
+       target="_blank" class="grafana-link">Open Full Dashboard &rarr;</a>
+  </div>
+  
+  <div class="grafana-grid-2x2">
+    <!-- CPU Panel (id=1) -->
+    <div class="grafana-panel-large">
+      <iframe src="{{ cfg.GRAFANA_URL }}/d-solo/device-details/device-details?orgId=1&var-hostname={{ device.hostname }}&from=now-6h&to=now&panelId=1&theme=dark" 
+              frameborder="0" allowfullscreen></iframe>
+    </div>
+    
+    <!-- Memory Panel (id=2) -->
+    <div class="grafana-panel-large">
+      <iframe src="{{ cfg.GRAFANA_URL }}/d-solo/device-details/device-details?orgId=1&var-hostname={{ device.hostname }}&from=now-6h&to=now&panelId=2&theme=dark" 
+              frameborder="0" allowfullscreen></iframe>
+    </div>
+    
+    <!-- Bandwidth Panel (id=3) -->
+    <div class="grafana-panel-large">
+      <iframe src="{{ cfg.GRAFANA_URL }}/d-solo/device-details/device-details?orgId=1&var-hostname={{ device.hostname }}&from=now-6h&to=now&panelId=3&theme=dark" 
+              frameborder="0" allowfullscreen></iframe>
+    </div>
+    
+    <!-- Storage Panel (id=4) -->
+    <div class="grafana-panel-large">
+      <iframe src="{{ cfg.GRAFANA_URL }}/d-solo/device-details/device-details?orgId=1&var-hostname={{ device.hostname }}&from=now-6h&to=now&panelId=4&theme=dark" 
+              frameborder="0" allowfullscreen></iframe>
+    </div>
+  </div>
+</section>
+
+<!-- Device Information -->
+<section class="detail-grid">
+  <!-- LNMS Device Info -->
+  <div class="card">
+    <h2>Device Information (LNMS)</h2>
+    <table class="info-table">
+      <tr><th>Hostname</th><td>{{ device.hostname }}</td></tr>
+      <tr><th>System Name</th><td>{{ device.sysName or 'N/A' }}</td></tr>
+      <tr><th>IP Address</th><td>{{ device.ip_address or 'N/A' }}</td></tr>
+      <tr><th>OS</th><td>{{ device.os or 'N/A' }}</td></tr>
+      <tr><th>Version</th><td>{{ device.version or 'N/A' }}</td></tr>
+      <tr><th>Hardware</th><td>{{ device.hardware or 'N/A' }}</td></tr>
+      <tr><th>Serial</th><td>{{ device.serial or 'N/A' }}</td></tr>
+      <tr><th>Type</th><td>{{ device.type or 'N/A' }}</td></tr>
+      <tr><th>Location</th><td>{{ device.location or 'N/A' }}</td></tr>
+      <tr><th>Uptime</th><td>{{ device.uptime_formatted }}</td></tr>
+      <tr><th>Last Polled</th><td>{{ device.last_polled or 'N/A' }}</td></tr>
+      <tr><th>Status Reason</th><td>{{ device.status_reason or 'N/A' }}</td></tr>
+      {% if device.purpose %}
+      <tr><th>Purpose</th><td>{{ device.purpose }}</td></tr>
+      {% endif %}
+      {% if device.notes %}
+      <tr><th>Notes</th><td>{{ device.notes }}</td></tr>
+      {% endif %}
+    </table>
+    {% if device.sysDescr %}
+    <div class="sys-descr">
+      <strong>System Description:</strong>
+      <p>{{ device.sysDescr }}</p>
+    </div>
+    {% endif %}
+    <div class="external-links">
+      <a href="{{ cfg.LNMS_DASHBOARD_URL }}/device/device={{ device.device_id }}/" target="_blank" class="btn-external">
+        View in LibreNMS &rarr;
+      </a>
+    </div>
+  </div>
+
+  <!-- Wazuh Agent Info -->
+  <div class="card">
+    <h2>Security Agent (Wazuh)</h2>
+    {% if wazuh_agent %}
+    <table class="info-table">
+      <tr><th>Agent ID</th><td>{{ wazuh_agent.id }}</td></tr>
+      <tr><th>Agent Name</th><td>{{ wazuh_agent.name }}</td></tr>
+      <tr><th>IP Address</th><td>{{ wazuh_agent.ip }}</td></tr>
+      <tr>
+        <th>Status</th>
+        <td>
+          <span class="agent-status agent-status-{{ wazuh_agent.status }}">
+            {{ wazuh_agent.status }}
+          </span>
+        </td>
+      </tr>
+      <tr><th>OS</th><td>{{ wazuh_agent.os.name if wazuh_agent.os else 'N/A' }} {{ wazuh_agent.os.version if wazuh_agent.os else '' }}</td></tr>
+      <tr><th>Platform</th><td>{{ wazuh_agent.os.platform if wazuh_agent.os else 'N/A' }}</td></tr>
+      <tr><th>Architecture</th><td>{{ wazuh_agent.os.arch if wazuh_agent.os else 'N/A' }}</td></tr>
+      <tr><th>Agent Version</th><td>{{ wazuh_agent.version or 'N/A' }}</td></tr>
+      <tr><th>Groups</th><td>{{ wazuh_agent.group | join(', ') if wazuh_agent.group else 'None' }}</td></tr>
+      <tr><th>Last Keep Alive</th><td>{{ wazuh_agent.lastKeepAlive or 'N/A' }}</td></tr>
+      <tr><th>Date Added</th><td>{{ wazuh_agent.dateAdd or 'N/A' }}</td></tr>
+      <tr><th>Manager</th><td>{{ wazuh_agent.manager or 'N/A' }}</td></tr>
+    </table>
+    <div class="external-links">
+      <a href="{{ cfg.WAZUH_DASHBOARD_URL }}/app/wazuh#/agents?agent={{ wazuh_agent.id }}" target="_blank" class="btn-external">
+        View in Wazuh &rarr;
+      </a>
+    </div>
+    {% else %}
+    <p class="text-muted">No Wazuh agent found for IP {{ device.ip_address or device.hostname }}.</p>
+    <p class="text-muted">The device may not have a Wazuh agent installed, or the IP address doesn't match.</p>
+    {% endif %}
+  </div>
+</section>
+
+<!-- Processors -->
+{% if processors %}
+<section class="card">
+  <h2>Processors / CPU</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Description</th>
+        <th>Usage</th>
+        <th>Warning Threshold</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in processors %}
+      <tr>
+        <td>{{ p.processor_descr }}</td>
+        <td class="{{ 'severity-critical' if p.processor_usage >= (p.processor_perc_warn or 75) else '' }}">
+          {{ p.processor_usage }}%
+        </td>
+        <td>{{ p.processor_perc_warn or 75 }}%</td>
+        <td>
+          <div class="usage-bar">
+            <div class="usage-fill {{ 'usage-high' if p.processor_usage >= (p.processor_perc_warn or 75) else 'usage-normal' }}" 
+                 style="width: {{ p.processor_usage }}%"></div>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<!-- Memory Pools -->
+{% if mempools %}
+<section class="card">
+  <h2>Memory Pools</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Description</th>
+        <th>Usage</th>
+        <th>Used</th>
+        <th>Free</th>
+        <th>Total</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for m in mempools %}
+      <tr>
+        <td>{{ m.mempool_descr }}</td>
+        <td class="{{ 'severity-critical' if m.mempool_perc >= (m.mempool_perc_warn or 80) else '' }}">
+          {{ m.mempool_perc }}%
+        </td>
+        <td>{{ m.mempool_used_formatted }}</td>
+        <td>{{ m.mempool_free_formatted }}</td>
+        <td>{{ m.mempool_total_formatted }}</td>
+        <td>
+          <div class="usage-bar">
+            <div class="usage-fill {{ 'usage-high' if m.mempool_perc >= (m.mempool_perc_warn or 80) else 'usage-normal' }}" 
+                 style="width: {{ m.mempool_perc }}%"></div>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<!-- Storage -->
+{% if storage %}
+<section class="card">
+  <h2>Storage</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Description</th>
+        <th>Usage</th>
+        <th>Used</th>
+        <th>Free</th>
+        <th>Total</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in storage %}
+      <tr>
+        <td>{{ s.storage_descr }}</td>
+        <td class="{{ 'severity-critical' if s.storage_perc >= (s.storage_perc_warn or 80) else '' }}">
+          {{ s.storage_perc }}%
+        </td>
+        <td>{{ s.storage_used_formatted }}</td>
+        <td>{{ s.storage_free_formatted }}</td>
+        <td>{{ s.storage_size_formatted }}</td>
+        <td>
+          <div class="usage-bar">
+            <div class="usage-fill {{ 'usage-high' if s.storage_perc >= (s.storage_perc_warn or 80) else 'usage-normal' }}" 
+                 style="width: {{ s.storage_perc }}%"></div>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<!-- Network Ports -->
+{% if ports %}
+<section class="card">
+  <h2>Network Interfaces</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Alias</th>
+        <th>Status</th>
+        <th>Speed</th>
+        <th>In (Mbps)</th>
+        <th>Out (Mbps)</th>
+        <th>Errors (In/Out)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in ports %}
+      <tr class="{{ 'port-down' if p.ifOperStatus != 'up' else '' }}">
+        <td>{{ p.ifName or p.ifDescr }}</td>
+        <td>{{ p.ifAlias or '-' }}</td>
+        <td>
+          <span class="port-status port-status-{{ p.ifOperStatus }}">
+            {{ p.ifOperStatus or 'unknown' }}
+          </span>
+        </td>
+        <td>{{ p.ifSpeed_formatted }}</td>
+        <td>{{ p.bandwidth_in_mbps }}</td>
+        <td>{{ p.bandwidth_out_mbps }}</td>
+        <td>{{ p.ifInErrors_rate or 0 }} / {{ p.ifOutErrors_rate or 0 }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<!-- Wazuh Alerts -->
+{% if wazuh_agent %}
+<section class="card">
+  <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+    <h2>Recent Security Alerts</h2>
+    <form method="get" action="{{ url_for('device_detail', device_id=device.device_id) }}" class="lnms-time-filter">
+      <label for="alert_window">Time window:</label>
+      <select name="alert_window" id="alert_window" onchange="this.form.submit()">
+        <option value="1h" {% if alert_window == '1h' %}selected{% endif %}>Last 1 hour</option>
+        <option value="4h" {% if alert_window == '4h' %}selected{% endif %}>Last 4 hours</option>
+        <option value="24h" {% if alert_window == '24h' %}selected{% endif %}>Last 24 hours</option>
+        <option value="7d" {% if alert_window == '7d' %}selected{% endif %}>Last 7 days</option>
+      </select>
+    </form>
+  </div>
+  
+  {% if wazuh_alerts %}
+  <table>
+    <thead>
+      <tr>
+        <th>Time</th>
+        <th>Level</th>
+        <th>Description</th>
+        <th>Groups</th>
+        <th>Location</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for a in wazuh_alerts %}
+      <tr>
+        <td class="nowrap">{{ a.timestamp[:19] if a.timestamp else 'N/A' }}</td>
+        <td>
+          <span class="alert-level alert-level-{{ 'high' if a.level >= 10 else ('medium' if a.level >= 7 else 'low') }}">
+            {{ a.level }}
+          </span>
+        </td>
+        <td>{{ a.description }}</td>
+        <td>{{ a.groups | join(', ') if a.groups else '-' }}</td>
+        <td>{{ a.location or '-' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="text-muted">No alerts in the selected time window.</p>
+  {% endif %}
+</section>
+{% endif %}
+
+{% endblock %}
